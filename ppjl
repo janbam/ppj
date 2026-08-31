@@ -22,17 +22,27 @@ if (args.length === 0) {
 // single document, a JSONL file contributes one document per line.
 const docs = [];
 for (const path of args) {
-  const text = fs.readFileSync(path, 'utf8');
+  // Read failures (missing file, permissions) get a readable one-liner
+  // instead of a raw stack trace.
+  let text;
+  try {
+    text = fs.readFileSync(path, 'utf8');
+  } catch (err) {
+    console.error(`ppjl: cannot read ${path}: ${err.message}`);
+    process.exit(1);
+  }
   const trimmed = text.trim();
 
   // Whole-file parse first: covers compact, single-line, and pretty-printed
-  // multi-line JSON. Failure here is expected for JSONL, so the error is
-  // discarded and we fall through to line parsing.
+  // multi-line JSON. Failure here is expected for JSONL, so we fall through
+  // to line parsing — but the error is kept, since it carries the true
+  // position when the file is a broken multi-line JSON document.
   let whole;
+  let wholeErr;
   try {
     whole = JSON.parse(trimmed);
-  } catch {
-    whole = undefined;
+  } catch (err) {
+    wholeErr = err;
   }
 
   if (whole !== undefined) {
@@ -52,8 +62,16 @@ for (const path of args) {
       docs.push(JSON.parse(trimmedLine));
       sawRecord = true;
     } catch (err) {
-      console.error(`ppjl: ${path}:${lineNumber}: ${err.message}`);
-      console.error(`ppjl: ${path} is neither valid JSON nor valid JSONL`);
+      // If earlier lines already parsed, the file is clearly JSONL and this
+      // line is the defect. Otherwise a whole-document error is the likelier
+      // diagnosis (e.g. broken multi-line JSON) and points at the real spot.
+      if (sawRecord) {
+        console.error(`ppjl: ${path}:${lineNumber}: ${err.message}`);
+        console.error(`ppjl: ${path} is not valid JSONL`);
+      } else {
+        console.error(`ppjl: ${path}: ${wholeErr.message}`);
+        console.error(`ppjl: ${path} is neither valid JSON nor valid JSONL`);
+      }
       process.exit(1);
     }
   }
@@ -65,7 +83,7 @@ for (const path of args) {
   }
 }
 
-// Single document prints bare; multiple inputs print as one pretty array.
+// Single document prints bare; multiple documents print as one pretty array.
 const output = docs.length === 1 ? docs[0] : docs;
 
 prettier
