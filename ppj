@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-// ppjl — pretty-print JSON and JSONL files to stdout.
+// ppj — pretty-print JSON and JSONL files to stdout.
 //
 // Each input file is auto-detected: a whole-file JSON document (compact,
 // single-line, or pretty-printed) prints as-is; otherwise the file is read
@@ -14,7 +14,7 @@ const prettier = require('prettier');
 const args = process.argv.slice(2);
 
 if (args.length === 0) {
-  console.error('Usage: ppjl <file...>  (auto-detects JSON and JSONL)');
+  console.error('Usage: ppj <file...|->  (auto-detects JSON and JSONL; - reads stdin)');
   process.exit(1);
 }
 
@@ -22,13 +22,15 @@ if (args.length === 0) {
 // single document, a JSONL file contributes one document per line.
 const docs = [];
 for (const path of args) {
+  // Treat stdin as an ordinary source so it follows the same parse and aggregation rules.
+  const source = path === '-' ? '<stdin>' : path;
   // Read failures (missing file, permissions) get a readable one-liner
   // instead of a raw stack trace.
   let text;
   try {
-    text = fs.readFileSync(path, 'utf8');
+    text = fs.readFileSync(path === '-' ? 0 : path, 'utf8');
   } catch (err) {
-    console.error(`ppjl: cannot read ${path}: ${err.message}`);
+    console.error(`ppj: cannot read ${source}: ${err.message}`);
     process.exit(1);
   }
   const trimmed = text.trim();
@@ -66,11 +68,11 @@ for (const path of args) {
       // line is the defect. Otherwise a whole-document error is the likelier
       // diagnosis (e.g. broken multi-line JSON) and points at the real spot.
       if (sawRecord) {
-        console.error(`ppjl: ${path}:${lineNumber}: ${err.message}`);
-        console.error(`ppjl: ${path} is not valid JSONL`);
+        console.error(`ppj: ${source}:${lineNumber}: ${err.message}`);
+        console.error(`ppj: ${source} is not valid JSONL`);
       } else {
-        console.error(`ppjl: ${path}: ${wholeErr.message}`);
-        console.error(`ppjl: ${path} is neither valid JSON nor valid JSONL`);
+        console.error(`ppj: ${source}: ${wholeErr.message}`);
+        console.error(`ppj: ${source} is neither valid JSON nor valid JSONL`);
       }
       process.exit(1);
     }
@@ -78,7 +80,7 @@ for (const path of args) {
 
   // Whole-parse failed and no line parsed → empty or whitespace-only file.
   if (!sawRecord) {
-    console.error(`ppjl: ${path} contains no JSON values`);
+    console.error(`ppj: ${source} contains no JSON values`);
     process.exit(1);
   }
 }
@@ -90,6 +92,6 @@ prettier
   .format(JSON.stringify(output), { parser: 'json', printWidth: 100 })
   .then(pretty => process.stdout.write(pretty))
   .catch(err => {
-    console.error(`ppjl: formatting failed: ${err.message}`);
+    console.error(`ppj: formatting failed: ${err.message}`);
     process.exit(1);
   });
