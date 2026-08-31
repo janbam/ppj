@@ -4,24 +4,67 @@
 const fs = require('fs');
 const prettier = require('prettier');
 
-// ── Parse JSONL files into a flat array ──────────────────────────
 const args = process.argv.slice(2);
 
 if (args.length === 0) {
-  console.error('Usage: ppjl <file.jsonl...>');
+  console.error('Usage: ppjl <file...>  (auto-detects JSON and JSONL)');
   process.exit(1);
 }
 
-const records = [];
+// Aggregate all JSON documents across inputs: a JSON file contributes its
+// single document, a JSONL file contributes one document per line.
+const docs = [];
 for (const path of args) {
   const text = fs.readFileSync(path, 'utf8');
+  const trimmed = text.trim();
+
+  // Whole-file parse first: covers compact, single-line, and pretty-printed
+  // multi-line JSON. Failure here is expected for JSONL, so the error is
+  // discarded and we fall through to line parsing.
+  let whole;
+  try {
+    whole = JSON.parse(trimmed);
+  } catch {
+    whole = undefined;
+  }
+
+  if (whole !== undefined) {
+    docs.push(whole);
+    continue;
+  }
+
+  // Not a single JSON document → require every non-empty line to be one
+  // (JSONL). Fail loudly with file and line context on the first bad line.
+  let lineNumber = 0;
+  let sawRecord = false;
   for (const line of text.split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) continue;
-    records.push(JSON.parse(trimmed));
+    lineNumber++;
+    const trimmedLine = line.trim();
+    if (trimmedLine === '') continue;
+    try {
+      docs.push(JSON.parse(trimmedLine));
+      sawRecord = true;
+    } catch (err) {
+      console.error(`ppjl: ${path}:${lineNumber}: ${err.message}`);
+      console.error(`ppjl: ${path} is neither valid JSON nor valid JSONL`);
+      process.exit(1);
+    }
+  }
+
+  // Whole-parse failed and no line parsed → empty or whitespace-only file.
+  if (!sawRecord) {
+    console.error(`ppjl: ${path} contains no JSON values`);
+    process.exit(1);
   }
 }
 
-// ── Format the assembled JSON array ──────────────────────────────
-const rawJson = JSON.stringify(records);
-prettier.format(rawJson, { parser: 'json', printWidth: 100 }).then(pretty => process.stdout.write(pretty));
+// Single document prints bare; multiple inputs print as one pretty array.
+const output = docs.length === 1 ? docs[0] : docs;
+
+prettier
+  .format(JSON.stringify(output), { parser: 'json', printWidth: 100 })
+  .then(pretty => process.stdout.write(pretty))
+  .catch(err => {
+    console.error(`ppjl: formatting failed: ${err.message}`);
+    process.exit(1);
+  });
