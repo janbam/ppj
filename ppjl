@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 'use strict';
 
+// ppjl — pretty-print JSON and JSONL files to stdout.
+//
+// Each input file is auto-detected: a whole-file JSON document (compact,
+// single-line, or pretty-printed) prints as-is; otherwise the file is read
+// as JSONL (one JSON value per line). Documents from all inputs are
+// combined — a single document prints bare, multiple print as one array.
+
 const fs = require('fs');
 const prettier = require('prettier');
 
