@@ -9,7 +9,6 @@
 // combined — a single document prints bare, multiple print as one array.
 
 const fs = require('fs');
-const prettier = require('prettier');
 
 const args = process.argv.slice(2);
 
@@ -115,18 +114,10 @@ async function main() {
   }
 
   // Single document prints bare; multiple documents print as one pretty array.
+  // Native stringify keeps this dependency-free, so the ~/.local/bin symlink
+  // works anywhere without node_modules or NODE_PATH resolution.
   const output = docs.length === 1 ? docs[0] : docs;
-
-  try {
-    const pretty = await prettier.format(JSON.stringify(output), {
-      parser: 'json',
-      printWidth: 100,
-    });
-    process.stdout.write(pretty);
-  } catch (err) {
-    console.error(`ppj: formatting failed: ${err.message}`);
-    process.exit(1);
-  }
+  process.stdout.write(JSON.stringify(output, null, 2) + '\n');
 }
 
 main();
