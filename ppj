@@ -13,85 +13,120 @@ const prettier = require('prettier');
 
 const args = process.argv.slice(2);
 
-if (args.length === 0) {
-  console.error('Usage: ppj <file...|->  (auto-detects JSON and JSONL; - reads stdin)');
-  process.exit(1);
+/**
+ * Collects piped standard input through Node's non-blocking-safe stream API.
+ *
+ * @returns {Promise<string>} Complete UTF-8 input.
+ */
+async function readStdin() {
+  const chunks = [];
+
+  // Let Node's stream layer wait for pipe data instead of synchronously polling fd 0.
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk);
+  }
+
+  return Buffer.concat(chunks).toString('utf8');
 }
 
-// Aggregate all JSON documents across inputs: a JSON file contributes its
-// single document, a JSONL file contributes one document per line.
-const docs = [];
-for (const path of args) {
-  // Treat stdin as an ordinary source so it follows the same parse and aggregation rules.
-  const source = path === '-' ? '<stdin>' : path;
-  // Read failures (missing file, permissions) get a readable one-liner
-  // instead of a raw stack trace.
-  let text;
-  try {
-    text = fs.readFileSync(path === '-' ? 0 : path, 'utf8');
-  } catch (err) {
-    console.error(`ppj: cannot read ${source}: ${err.message}`);
+/** Runs the CLI's input collection, parsing, and formatting workflow. */
+async function main() {
+  if (args.length === 0) {
+    console.error(
+      'Usage: ppj <file...|->  (auto-detects JSON and JSONL; - reads stdin)',
+    );
     process.exit(1);
   }
-  const trimmed = text.trim();
 
-  // Whole-file parse first: covers compact, single-line, and pretty-printed
-  // multi-line JSON. Failure here is expected for JSONL, so we fall through
-  // to line parsing — but the error is kept, since it carries the true
-  // position when the file is a broken multi-line JSON document.
-  let whole;
-  let wholeErr;
-  try {
-    whole = JSON.parse(trimmed);
-  } catch (err) {
-    wholeErr = err;
-  }
-
-  if (whole !== undefined) {
-    docs.push(whole);
-    continue;
-  }
-
-  // Not a single JSON document → require every non-empty line to be one
-  // (JSONL). Fail loudly with file and line context on the first bad line.
-  let lineNumber = 0;
-  let sawRecord = false;
-  for (const line of text.split('\n')) {
-    lineNumber++;
-    const trimmedLine = line.trim();
-    if (trimmedLine === '') continue;
-    try {
-      docs.push(JSON.parse(trimmedLine));
-      sawRecord = true;
-    } catch (err) {
-      // If earlier lines already parsed, the file is clearly JSONL and this
-      // line is the defect. Otherwise a whole-document error is the likelier
-      // diagnosis (e.g. broken multi-line JSON) and points at the real spot.
-      if (sawRecord) {
-        console.error(`ppj: ${source}:${lineNumber}: ${err.message}`);
-        console.error(`ppj: ${source} is not valid JSONL`);
-      } else {
-        console.error(`ppj: ${source}: ${wholeErr.message}`);
-        console.error(`ppj: ${source} is neither valid JSON nor valid JSONL`);
+  // Aggregate all JSON documents across inputs: a JSON file contributes its
+  // single document, a JSONL file contributes one document per line.
+  const docs = [];
+  let readFromStdin = false;
+  for (const path of args) {
+    if (path === '-') {
+      // A stream is consumable once; reject a second marker instead of silently losing data.
+      if (readFromStdin) {
+        console.error('ppj: stdin can only be read once');
+        process.exit(1);
       }
+      readFromStdin = true;
+    }
+    // Treat stdin as an ordinary source so it follows the same parse and aggregation rules.
+    const source = path === '-' ? '<stdin>' : path;
+    // Read failures (missing file, permissions) get a readable one-liner
+    // instead of a raw stack trace.
+    let text;
+    try {
+      text = path === '-' ? await readStdin() : fs.readFileSync(path, 'utf8');
+    } catch (err) {
+      console.error(`ppj: cannot read ${source}: ${err.message}`);
+      process.exit(1);
+    }
+    const trimmed = text.trim();
+
+    // Whole-file parse first: covers compact, single-line, and pretty-printed
+    // multi-line JSON. Failure here is expected for JSONL, so we fall through
+    // to line parsing — but the error is kept, since it carries the true
+    // position when the file is a broken multi-line JSON document.
+    let whole;
+    let wholeErr;
+    try {
+      whole = JSON.parse(trimmed);
+    } catch (err) {
+      wholeErr = err;
+    }
+
+    if (whole !== undefined) {
+      docs.push(whole);
+      continue;
+    }
+
+    // Not a single JSON document → require every non-empty line to be one
+    // (JSONL). Fail loudly with file and line context on the first bad line.
+    let lineNumber = 0;
+    let sawRecord = false;
+    for (const line of text.split('\n')) {
+      lineNumber++;
+      const trimmedLine = line.trim();
+      if (trimmedLine === '') continue;
+      try {
+        docs.push(JSON.parse(trimmedLine));
+        sawRecord = true;
+      } catch (err) {
+        // If earlier lines already parsed, the file is clearly JSONL and this
+        // line is the defect. Otherwise a whole-document error is the likelier
+        // diagnosis (e.g. broken multi-line JSON) and points at the real spot.
+        if (sawRecord) {
+          console.error(`ppj: ${source}:${lineNumber}: ${err.message}`);
+          console.error(`ppj: ${source} is not valid JSONL`);
+        } else {
+          console.error(`ppj: ${source}: ${wholeErr.message}`);
+          console.error(`ppj: ${source} is neither valid JSON nor valid JSONL`);
+        }
+        process.exit(1);
+      }
+    }
+
+    // Whole-parse failed and no line parsed → empty or whitespace-only file.
+    if (!sawRecord) {
+      console.error(`ppj: ${source} contains no JSON values`);
       process.exit(1);
     }
   }
 
-  // Whole-parse failed and no line parsed → empty or whitespace-only file.
-  if (!sawRecord) {
-    console.error(`ppj: ${source} contains no JSON values`);
+  // Single document prints bare; multiple documents print as one pretty array.
+  const output = docs.length === 1 ? docs[0] : docs;
+
+  try {
+    const pretty = await prettier.format(JSON.stringify(output), {
+      parser: 'json',
+      printWidth: 100,
+    });
+    process.stdout.write(pretty);
+  } catch (err) {
+    console.error(`ppj: formatting failed: ${err.message}`);
     process.exit(1);
   }
 }
 
-// Single document prints bare; multiple documents print as one pretty array.
-const output = docs.length === 1 ? docs[0] : docs;
-
-prettier
-  .format(JSON.stringify(output), { parser: 'json', printWidth: 100 })
-  .then(pretty => process.stdout.write(pretty))
-  .catch(err => {
-    console.error(`ppj: formatting failed: ${err.message}`);
-    process.exit(1);
-  });
+main();
